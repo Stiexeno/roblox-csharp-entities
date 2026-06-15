@@ -234,6 +234,33 @@ namespace G {
 		}
 
 		[Fact]
+		public void ComponentSuffix_IsStrippedFromGeneratedApi()
+		{
+			// A class named `XComponent` generates the bare `entity.X` API
+			// (Entitas convention); the lookup keeps `typeof(XComponent)` so a
+			// component named after an external/builtin type never clashes.
+			string source = @"
+using Entities;
+using Entities.CodeGeneration.Attributes;
+namespace G { [Game] public class VelocityComponent : IComponent { public int Value; } }";
+			TestHarness.Project p = Run(nameof(ComponentSuffix_IsStrippedFromGeneratedApi), source);
+
+			string entity = TestHarness.ReadGenerated(p, "Components/Game.VelocityComponent.cs");
+			Assert.Contains("public int Velocity", entity);
+			Assert.Contains("public bool HasVelocity", entity);
+			Assert.Contains("AddVelocity(int newValue)", entity);
+			Assert.Contains("ReplaceVelocity(int newValue)", entity);
+			Assert.Contains("public void RemoveVelocity()", entity);
+			Assert.Contains("public static IMatcher<GameEntity> Velocity", entity);
+			Assert.DoesNotContain("AddVelocityComponent", entity);
+			Assert.DoesNotContain("public int VelocityComponent", entity);
+
+			string lookup = TestHarness.ReadGenerated(p, "GameComponentsLookup.cs");
+			Assert.Contains("public const int Velocity = ", lookup);
+			Assert.Contains("typeof(VelocityComponent)", lookup);
+		}
+
+		[Fact]
 		public void EntityValue_MultiField_DoesNotUnwrap()
 		{
 			string source = @"

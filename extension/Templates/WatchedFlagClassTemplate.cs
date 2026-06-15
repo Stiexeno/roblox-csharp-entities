@@ -20,12 +20,12 @@ namespace RobloxCSharp.Extensions.Entities
 			{
 				sb.AppendLine($"namespace {source.NamespaceName}");
 				sb.AppendLine("{");
-				sb.AppendLine($"\tpublic class {source.TypeName}Changed : IComponent {{ }}");
+				sb.AppendLine($"\tpublic class {source.ClassName}Changed : IComponent {{ }}");
 				sb.AppendLine("}");
 			}
 			else
 			{
-				sb.AppendLine($"public class {source.TypeName}Changed : IComponent {{ }}");
+				sb.AppendLine($"public class {source.ClassName}Changed : IComponent {{ }}");
 			}
 			return sb.ToString();
 		}

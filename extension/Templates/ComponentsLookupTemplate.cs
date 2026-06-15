@@ -69,7 +69,7 @@ namespace RobloxCSharp.Extensions.Entities
 			sb.AppendLine();
 			sb.AppendLine("\tpublic static readonly System.Type[] componentTypes =");
 			sb.AppendLine("\t{");
-			foreach (ComponentModel c in ctx.Components) sb.AppendLine($"\t\ttypeof({c.TypeName}),");
+			foreach (ComponentModel c in ctx.Components) sb.AppendLine($"\t\ttypeof({c.ClassName}),");
 			sb.AppendLine("\t};");
 			sb.AppendLine("}");
 			return sb.ToString();
