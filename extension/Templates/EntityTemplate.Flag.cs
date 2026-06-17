@@ -26,9 +26,6 @@ namespace RobloxCSharp.Extensions.Entities
 			string fireAdd = c.IsReplicated
 				? $" if (EntitiesReplication.ShouldEmit()) EntitiesReplication.QueueSet(\"{ctx.Name}\", {lookup}, creationIndex);"
 				: "";
-			string fireRemove = c.IsReplicated
-				? $" if (EntitiesReplication.ShouldEmit()) EntitiesReplication.QueueRemove(\"{ctx.Name}\", {lookup}, creationIndex);"
-				: "";
 
 			// Synthesized Command flag — this is the client→server ship
 			// trigger. True branch marks the entity in the pending set
@@ -46,9 +43,6 @@ namespace RobloxCSharp.Extensions.Entities
 			string uniqueSet = c.IsUnique
 				? $" {{ I{ctx.Name}{c.TypeName}ContextHooks _ctx = context as I{ctx.Name}{c.TypeName}ContextHooks; if (_ctx != null) _ctx._Set{c.TypeName}Entity(this); }}"
 				: "";
-			string uniqueClear = c.IsUnique
-				? $" {{ I{ctx.Name}{c.TypeName}ContextHooks _ctx = context as I{ctx.Name}{c.TypeName}ContextHooks; if (_ctx != null) _ctx._Clear{c.TypeName}Entity(); }}"
-				: "";
 			string watchedFlag = c.IsWatched
 				? $" Is{c.TypeName}Changed = true;"
 				: "";
@@ -62,7 +56,10 @@ namespace RobloxCSharp.Extensions.Entities
 			sb.AppendLine($"\t\t\tif (value != Is{c.TypeName})");
 			sb.AppendLine("\t\t\t{");
 			sb.AppendLine($"\t\t\t\tif (value) {{ AddComponent({lookup}, _{c.TypeName}Component);{fireAdd}{markCommandPending}{uniqueSet}{watchedFlag} }}");
-			sb.AppendLine($"\t\t\t\telse {{ RemoveComponent({lookup});{fireRemove}{unmarkCommandPending}{uniqueClear}{watchedFlag} }}");
+			// RemoveComponent only; [Replicated] QueueRemove and [Unique] _Clear
+			// fire from {Ctx}Context._OnComponentRemoved (runtime-driven), so a
+			// plain Entity:Destroy tears the flag down identically.
+			sb.AppendLine($"\t\t\t\telse {{ RemoveComponent({lookup});{unmarkCommandPending}{watchedFlag} }}");
 			sb.AppendLine("\t\t\t}");
 			sb.AppendLine("\t\t}");
 			sb.AppendLine("\t}");

@@ -73,6 +73,7 @@ function Entity:RemoveComponent(index)
 	self._components[index] = nil
 	self:_PushToPool(index, existing)
 	self:_NotifyContext(index, nil)
+	if self._context ~= nil then self._context:_OnComponentRemoved(self, index, existing) end
 end
 
 function Entity:ReplaceComponent(index, component)
@@ -83,6 +84,7 @@ function Entity:ReplaceComponent(index, component)
 			self._components[index] = nil
 			self:_PushToPool(index, existing)
 			self:_NotifyContext(index, nil)
+			if self._context ~= nil then self._context:_OnComponentRemoved(self, index, existing) end
 		end
 		return
 	end
@@ -180,6 +182,7 @@ function Entity:RemoveAllComponents()
 		self._components[index] = nil
 		self:_PushToPool(index, component)
 		self:_NotifyContext(index, nil)
+		if self._context ~= nil then self._context:_OnComponentRemoved(self, index, component) end
 	end
 end
 

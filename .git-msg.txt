@@ -1,0 +1,29 @@
+Drop the generated Entity.Destroy override; centralize removal hooks
+
+The codegen emitted a per-context GameEntity.Destroy() override that
+pre-fired RemoveX / IsX = false for every [Replicated]/[Unique]/[EntityIndex]
+component so their teardown ran before base.Destroy() wiped _components. The
+entity already knows its components (Entity:RemoveAllComponents strips them
+through the notify path), so the override was redundant scaffolding whose only
+job was reaching the removal side-effects that lived inline in the typed
+accessors.
+
+Move those side-effects onto a single runtime-driven context hook instead:
+
+- runtime: Entity:RemoveComponent / ReplaceComponent(nil) / RemoveAllComponents
+  now call Context:_OnComponentRemoved(self, index, removed) after the group
+  notify. Base Context has a no-op; the removed instance is passed so index
+  hooks can read the key field.
+- codegen: ContextTemplate emits a {Ctx}Context._OnComponentRemoved override
+  dispatching per component index — QueueRemove ([Replicated]), _Clear
+  ([Unique]), _Unregister ([EntityIndex], keyed off the removed component).
+  EntityTemplate now emits a bare entity shell (no Destroy); RemoveX is slim
+  (RemoveComponent only). Add/Replace/setter side-effects stay inline — only
+  removal needs to be reachable from the generic teardown path.
+
+A plain Entity:Destroy now replicates removals, clears unique singletons, and
+unregisters index entries with no per-entity override. Wire format and digest
+are unchanged. Tests rewritten (EntityDestroy_* -> OnComponentRemoved_*);
+243 pass.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

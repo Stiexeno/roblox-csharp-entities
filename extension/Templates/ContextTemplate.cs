@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace RobloxCSharp.Extensions.Entities
@@ -14,8 +16,56 @@ namespace RobloxCSharp.Extensions.Entities
 			sb.AppendLine("{");
 			sb.AppendLine($"\tpublic {ctx.Name}Context() : base({ctx.Name}ComponentsLookup.TotalComponents) {{ }}");
 			sb.AppendLine($"\tpublic override {ctx.Name}Entity CreateEntityInstance() {{ return new {ctx.Name}Entity(); }}");
+			EmitOnComponentRemoved(sb, ctx);
 			sb.AppendLine("}");
 			return sb.ToString();
+		}
+
+		// Runtime-fired removal hook (Entity.luau → Context:_OnComponentRemoved)
+		// for every component stripped from an entity, including the bulk strip
+		// inside Entity:Destroy. Centralizing the removal side-effects here is
+		// what lets the entity skip a per-component Destroy override:
+		//   • [Replicated]  → QueueRemove on the wire (guarded by ShouldEmit)
+		//   • [Unique]      → _Clear{X}Entity on the singleton field
+		//   • [EntityIndex] → _Unregister{X} per indexed field, keyed off the
+		//                     removed component instance (its field still holds
+		//                     the value being torn down)
+		// The matching add/replace side ([Register], [Set], QueueSet) stays
+		// inline in the entity AddX/ReplaceX/setter bodies — only removal needs
+		// to be reachable from the generic teardown path.
+		private static void EmitOnComponentRemoved(StringBuilder sb, ContextModel ctx)
+		{
+			List<ComponentModel> hooked = ctx.Components
+				.Where(c => c.IsReplicated || c.IsUnique || c.HasIndexedField)
+				.ToList();
+			if (hooked.Count == 0) return;
+
+			sb.AppendLine($"\tpublic override void _OnComponentRemoved({ctx.Name}Entity entity, int index, IComponent component)");
+			sb.AppendLine("\t{");
+			bool first = true;
+			foreach (ComponentModel c in hooked)
+			{
+				string lookup = $"{ctx.Name}ComponentsLookup.{c.TypeName}";
+				sb.AppendLine($"\t\t{(first ? "if" : "else if")} (index == {lookup})");
+				sb.AppendLine("\t\t{");
+
+				if (c.IsReplicated)
+					sb.AppendLine($"\t\t\tif (EntitiesReplication.ShouldEmit()) EntitiesReplication.QueueRemove(\"{ctx.Name}\", {lookup}, entity.creationIndex);");
+
+				if (c.IsUnique)
+					sb.AppendLine($"\t\t\t_Clear{c.TypeName}Entity();");
+
+				List<ComponentField> indexedFields = c.Fields.Where(f => f.IsIndexed).ToList();
+				foreach (ComponentField f in indexedFields)
+				{
+					string suffix = indexedFields.Count > 1 ? f.Name : "";
+					sb.AppendLine($"\t\t\t_Unregister{c.TypeName}{suffix}(entity, (({c.FullName})component).{f.Name});");
+				}
+
+				sb.AppendLine("\t\t}");
+				first = false;
+			}
+			sb.AppendLine("\t}");
 		}
 	}
 }

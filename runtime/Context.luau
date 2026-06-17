@@ -211,4 +211,12 @@ function Context:NotifyComponentChanged(entity, index, component)
 	end
 end
 
+-- Removal hook the runtime fires for EVERY component that leaves an entity —
+-- RemoveComponent, ReplaceComponent(nil), and RemoveAllComponents (so a plain
+-- Entity:Destroy strips replicated/unique/indexed components correctly without
+-- a codegen-emitted per-component Destroy override). `component` is the removed
+-- instance, so index hooks can read its key field. The codegen-emitted
+-- {Ctx}Context overrides this; the base is a no-op for hook-free contexts.
+function Context:_OnComponentRemoved(entity, index, component) end
+
 return Context

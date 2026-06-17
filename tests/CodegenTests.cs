@@ -600,20 +600,26 @@ namespace G {
 		}
 
 		[Fact]
-		public void Replication_RemoveX_BodyEnqueuesRemove()
+		public void Replication_RemoveX_IsSlim_EnqueueMovedToContextHook()
 		{
-			TestHarness.Project p = Run(nameof(Replication_RemoveX_BodyEnqueuesRemove), OneReplicatedHealth);
+			// RemoveX only strips the component now; the QueueRemove lives in
+			// GameContext._OnComponentRemoved so a plain Destroy replicates too.
+			TestHarness.Project p = Run(nameof(Replication_RemoveX_IsSlim_EnqueueMovedToContextHook), OneReplicatedHealth);
 			string entity = TestHarness.ReadGenerated(p, "Components/Game.Health.cs");
-			Assert.Contains("EntitiesReplication.QueueRemove(\"Game\", GameComponentsLookup.Health, creationIndex);", entity);
+			Assert.DoesNotContain("EntitiesReplication.QueueRemove", entity);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.Contains("EntitiesReplication.QueueRemove(\"Game\", GameComponentsLookup.Health, entity.creationIndex);", ctx);
 		}
 
 		[Fact]
-		public void Replication_FlagSetter_EnqueuesSetOrRemoveByValue()
+		public void Replication_FlagSetter_EnqueuesSet_RemoveMovedToContextHook()
 		{
-			TestHarness.Project p = Run(nameof(Replication_FlagSetter_EnqueuesSetOrRemoveByValue), OneReplicatedFlag);
+			TestHarness.Project p = Run(nameof(Replication_FlagSetter_EnqueuesSet_RemoveMovedToContextHook), OneReplicatedFlag);
 			string entity = TestHarness.ReadGenerated(p, "Components/Game.Stunned.cs");
 			Assert.Contains("EntitiesReplication.QueueSet(\"Game\", GameComponentsLookup.Stunned, creationIndex);", entity);
-			Assert.Contains("EntitiesReplication.QueueRemove(\"Game\", GameComponentsLookup.Stunned, creationIndex);", entity);
+			Assert.DoesNotContain("EntitiesReplication.QueueRemove", entity);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.Contains("EntitiesReplication.QueueRemove(\"Game\", GameComponentsLookup.Stunned, entity.creationIndex);", ctx);
 		}
 
 		[Fact]
@@ -635,7 +641,8 @@ namespace G {
 			TestHarness.Project p = Run(nameof(Replication_Enqueue_IsGuardedByShouldEmit), OneReplicatedHealth);
 			string entity = TestHarness.ReadGenerated(p, "Components/Game.Health.cs");
 			Assert.Contains("if (EntitiesReplication.ShouldEmit()) EntitiesReplication.QueueSet(", entity);
-			Assert.Contains("if (EntitiesReplication.ShouldEmit()) EntitiesReplication.QueueRemove(", entity);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.Contains("if (EntitiesReplication.ShouldEmit()) EntitiesReplication.QueueRemove(", ctx);
 		}
 
 		[Fact]
@@ -960,10 +967,13 @@ namespace G { [Game, Unique] public class Score : IComponent { public int Value;
 			// _SetGameSessionEntity(this) after AddComponent.
 			TestHarness.Project p = Run(nameof(Unique_Flag_EntitySetter_TailUpdatesContextField), OneUniqueFlag);
 			string comp = TestHarness.ReadGenerated(p, "Components/Game.GameSession.cs");
-			// Captures `context` once via `{ GameContext _ctx = (GameContext)context; if (_ctx != null) ... }`
-			// to halve the `self:context()` accessor count in Lua.
+			// Set side stays inline in the flag setter (captures `context` once
+			// via `{ GameContext _ctx = (GameContext)context; if (_ctx != null) }`
+			// to halve the `self:context()` accessor count in Lua). The clear
+			// moved to the runtime-fired GameContext._OnComponentRemoved.
 			Assert.Contains("_ctx._SetGameSessionEntity(this)", comp);
-			Assert.Contains("_ctx._ClearGameSessionEntity()", comp);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.Contains("_ClearGameSessionEntity();", ctx);
 		}
 
 		[Fact]
@@ -994,7 +1004,8 @@ namespace G { [Game, Unique] public class Score : IComponent { public int Value;
 			int setHits = System.Text.RegularExpressions.Regex.Matches(
 				comp, @"_ctx\._SetScoreEntity\(this\);").Count;
 			Assert.True(setHits >= 3, $"Expected _SetScoreEntity in Add + Replace + setter, found {setHits}.");
-			Assert.Contains("_ctx._ClearScoreEntity();", comp);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.Contains("_ClearScoreEntity();", ctx);
 		}
 
 		[Fact]
@@ -1129,10 +1140,12 @@ namespace G {
 		[Fact]
 		public void PrimaryIndex_EntityRemove_UnregistersKey()
 		{
+			// RemoveX is slim (just RemoveComponent); the unregister fires from
+			// GameContext._OnComponentRemoved, keyed off the removed component
+			// instance, so a plain Destroy unregisters the index entry too.
 			TestHarness.Project p = Run(nameof(PrimaryIndex_EntityRemove_UnregistersKey), OnePrimaryIndexedUser);
-			string comp = TestHarness.ReadGenerated(p, "Components/Game.User.cs");
-			Assert.Contains("string _prevUserId = HasUser ? User.UserId : default(string);", comp);
-			Assert.Contains("_ctx._UnregisterUser(this, _prevUserId);", comp);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.Contains("_UnregisterUser(entity, ((global::G.User)component).UserId);", ctx);
 		}
 
 		[Fact]
@@ -1187,69 +1200,81 @@ namespace G {
 		}
 
 		// ----------------------------------------------------------------
-		// Entity.Destroy override — codegen emits a per-context override
-		// that pre-fires RemoveX (or `IsX = false`) for every hooked
-		// component before the base teardown, so [Replicated] QueueRemove
-		// ops, [Unique] _Clear hooks, and [EntityIndex] _Unregister hooks
-		// all run when user code destroys an entity directly instead of
-		// going through UnsetX / RemoveX.
+		// Removal teardown — the entity is a bare shell (no Destroy
+		// override). {Ctx}Context._OnComponentRemoved, fired by the runtime
+		// for every component stripped from an entity (RemoveComponent,
+		// ReplaceComponent(nil), and the bulk strip in Entity:Destroy), runs
+		// the [Replicated] QueueRemove, [Unique] _Clear, and [EntityIndex]
+		// _Unregister side-effects. A plain Destroy stays in sync with no
+		// per-entity override to generate.
 		// ----------------------------------------------------------------
 
 		[Fact]
-		public void EntityDestroy_OverriddenWhenContextHasReplicatedComponent()
+		public void Entity_IsBareShell_NoDestroyOverride()
 		{
-			TestHarness.Project p = Run(nameof(EntityDestroy_OverriddenWhenContextHasReplicatedComponent), OneReplicatedHealth);
+			TestHarness.Project p = Run(nameof(Entity_IsBareShell_NoDestroyOverride), OneReplicatedHealth);
 			string entity = TestHarness.ReadGenerated(p, "GameEntity.cs");
-			Assert.Contains("public override void Destroy()", entity);
-			Assert.Contains("if (HasHealth) RemoveHealth();", entity);
-			Assert.Contains("base.Destroy();", entity);
-		}
-
-		[Fact]
-		public void EntityDestroy_OverriddenWhenContextHasUniqueComponent()
-		{
-			TestHarness.Project p = Run(nameof(EntityDestroy_OverriddenWhenContextHasUniqueComponent), OneUniqueValue);
-			string entity = TestHarness.ReadGenerated(p, "GameEntity.cs");
-			Assert.Contains("public override void Destroy()", entity);
-			Assert.Contains("if (HasScore) RemoveScore();", entity);
-		}
-
-		[Fact]
-		public void EntityDestroy_OverriddenWhenContextHasIndexedComponent()
-		{
-			TestHarness.Project p = Run(nameof(EntityDestroy_OverriddenWhenContextHasIndexedComponent), OnePrimaryIndexedUser);
-			string entity = TestHarness.ReadGenerated(p, "GameEntity.cs");
-			Assert.Contains("public override void Destroy()", entity);
-			Assert.Contains("if (HasUser) RemoveUser();", entity);
-		}
-
-		[Fact]
-		public void EntityDestroy_FlagWithHook_UsesIsXFalse()
-		{
-			// Flags don't have a RemoveX method — the cleanup is
-			// `IsX = false`, which routes through the same setter that
-			// fires the [Unique] / [Replicated] hooks for flag flips.
-			TestHarness.Project p = Run(nameof(EntityDestroy_FlagWithHook_UsesIsXFalse), OneUniqueFlag);
-			string entity = TestHarness.ReadGenerated(p, "GameEntity.cs");
-			Assert.Contains("if (IsGameSession) IsGameSession = false;", entity);
-		}
-
-		[Fact]
-		public void EntityDestroy_NotOverriddenForHookFreeContext()
-		{
-			// Plain component with no [Replicated], no [Unique], no index —
-			// no override needed; the base partial stays empty.
-			TestHarness.Project p = Run(nameof(EntityDestroy_NotOverriddenForHookFreeContext), OneGamePlayer);
-			string entity = TestHarness.ReadGenerated(p, "GameEntity.cs");
-			Assert.DoesNotContain("public override void Destroy()", entity);
+			Assert.DoesNotContain("Destroy", entity);
 			Assert.Contains("public sealed partial class GameEntity : Entity { }", entity);
 		}
 
 		[Fact]
-		public void EntityDestroy_CallsBaseAfterEveryHookedRemove()
+		public void OnComponentRemoved_EnqueuesRemove_ForReplicated()
 		{
-			// Ordering matters: every per-component cleanup runs before
-			// base.Destroy() so hooks see live entity state.
+			TestHarness.Project p = Run(nameof(OnComponentRemoved_EnqueuesRemove_ForReplicated), OneReplicatedHealth);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.Contains("public override void _OnComponentRemoved(GameEntity entity, int index, IComponent component)", ctx);
+			Assert.Contains("if (index == GameComponentsLookup.Health)", ctx);
+			Assert.Contains("if (EntitiesReplication.ShouldEmit()) EntitiesReplication.QueueRemove(\"Game\", GameComponentsLookup.Health, entity.creationIndex);", ctx);
+		}
+
+		[Fact]
+		public void OnComponentRemoved_ClearsUniqueSingleton()
+		{
+			TestHarness.Project p = Run(nameof(OnComponentRemoved_ClearsUniqueSingleton), OneUniqueValue);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.Contains("if (index == GameComponentsLookup.Score)", ctx);
+			Assert.Contains("_ClearScoreEntity();", ctx);
+		}
+
+		[Fact]
+		public void OnComponentRemoved_UnregistersIndexedKey_FromRemovedComponent()
+		{
+			// The removed component instance still carries the key field, so
+			// the hook reads it off the cast component rather than capturing a
+			// pre-remove snapshot like the AddX/ReplaceX paths do.
+			TestHarness.Project p = Run(nameof(OnComponentRemoved_UnregistersIndexedKey_FromRemovedComponent), OnePrimaryIndexedUser);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.Contains("if (index == GameComponentsLookup.User)", ctx);
+			Assert.Contains("_UnregisterUser(entity, ((global::G.User)component).UserId);", ctx);
+		}
+
+		[Fact]
+		public void OnComponentRemoved_FlagHook_ClearsUniqueSingleton()
+		{
+			// Flags route through the same removal hook — a [Unique] flag
+			// clears the singleton (no RemoveX/IsX=false fan-out needed).
+			TestHarness.Project p = Run(nameof(OnComponentRemoved_FlagHook_ClearsUniqueSingleton), OneUniqueFlag);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.Contains("if (index == GameComponentsLookup.GameSession)", ctx);
+			Assert.Contains("_ClearGameSessionEntity();", ctx);
+		}
+
+		[Fact]
+		public void OnComponentRemoved_NotEmittedForHookFreeContext()
+		{
+			// No [Replicated]/[Unique]/index in the context — the base no-op
+			// suffices, so no override is generated and the entity stays bare.
+			TestHarness.Project p = Run(nameof(OnComponentRemoved_NotEmittedForHookFreeContext), OneGamePlayer);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.DoesNotContain("_OnComponentRemoved", ctx);
+			string entity = TestHarness.ReadGenerated(p, "GameEntity.cs");
+			Assert.Contains("public sealed partial class GameEntity : Entity { }", entity);
+		}
+
+		[Fact]
+		public void OnComponentRemoved_CombinesEveryHookForOneContext()
+		{
 			string source = @"
 using Entities;
 using Entities.CodeGeneration.Attributes;
@@ -1257,14 +1282,12 @@ namespace G {
 	[Game, Replicated] public class Health : IComponent { public int Value; }
 	[Game, Unique]     public class GameSession : IComponent { }
 }";
-			TestHarness.Project p = Run(nameof(EntityDestroy_CallsBaseAfterEveryHookedRemove), source);
+			TestHarness.Project p = Run(nameof(OnComponentRemoved_CombinesEveryHookForOneContext), source);
+			string ctx = TestHarness.ReadGenerated(p, "GameContext.cs");
+			Assert.Contains("EntitiesReplication.QueueRemove(\"Game\", GameComponentsLookup.Health, entity.creationIndex);", ctx);
+			Assert.Contains("_ClearGameSessionEntity();", ctx);
 			string entity = TestHarness.ReadGenerated(p, "GameEntity.cs");
-			int healthIdx = entity.IndexOf("if (HasHealth) RemoveHealth();", StringComparison.Ordinal);
-			int sessionIdx = entity.IndexOf("if (IsGameSession) IsGameSession = false;", StringComparison.Ordinal);
-			int baseIdx = entity.IndexOf("base.Destroy();", StringComparison.Ordinal);
-			Assert.True(healthIdx > 0 && sessionIdx > 0 && baseIdx > 0, "All three calls must appear in the override body.");
-			Assert.True(healthIdx < baseIdx, "RemoveHealth must precede base.Destroy.");
-			Assert.True(sessionIdx < baseIdx, "IsGameSession = false must precede base.Destroy.");
+			Assert.DoesNotContain("Destroy", entity);
 		}
 
 		// ----------------------------------------------------------------

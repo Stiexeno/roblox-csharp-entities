@@ -39,9 +39,6 @@ namespace RobloxCSharp.Extensions.Entities
 			string fireSet = c.IsReplicated
 				? $"\t\tif (EntitiesReplication.ShouldEmit()) EntitiesReplication.QueueSet({setArgs});"
 				: "";
-			string fireRemove = c.IsReplicated
-				? $"\t\tif (EntitiesReplication.ShouldEmit()) EntitiesReplication.QueueRemove(\"{ctx.Name}\", {lookup}, creationIndex);"
-				: "";
 
 			int indexedFieldCount = 0;
 			for (int fi = 0; fi < c.Fields.Count; fi++) if (c.Fields[fi].IsIndexed) indexedFieldCount++;
@@ -163,26 +160,14 @@ namespace RobloxCSharp.Extensions.Entities
 			sb.AppendLine("\t\treturn component;");
 			sb.AppendLine("\t}");
 
+			// RemoveX only strips the component — the [Replicated] QueueRemove,
+			// [Unique] _Clear, and [EntityIndex] _Unregister side-effects fire
+			// from {Ctx}Context._OnComponentRemoved (runtime-driven) so they run
+			// for a plain Entity:Destroy too, with no per-entity override.
 			sb.AppendLine();
 			sb.AppendLine($"\tpublic void Remove{c.TypeName}()");
 			sb.AppendLine("\t{");
-			foreach (ComponentField f in indexedFields)
-			{
-				sb.AppendLine($"\t\t{f.TypeFullName} _prev{f.Name} = Has{c.TypeName} ? {ReadField(f)} : default({f.TypeFullName});");
-			}
-			if (indexedFields.Count > 0)
-				sb.AppendLine($"\t\tbool _had{c.TypeName} = Has{c.TypeName};");
 			sb.AppendLine($"\t\tRemoveComponent({lookup});");
-			if (c.IsReplicated) sb.AppendLine(fireRemove);
-			EmitContextBlock("\t\t", indent =>
-			{
-				if (c.IsUnique) sb.AppendLine($"{indent}_ctx._Clear{c.TypeName}Entity();");
-				foreach (ComponentField f in indexedFields)
-				{
-					string suffix = IndexSuffix(f);
-					sb.AppendLine($"{indent}if (_had{c.TypeName}) _ctx._Unregister{c.TypeName}{suffix}(this, _prev{f.Name});");
-				}
-			});
 			sb.AppendLine("\t}");
 		}
 	}

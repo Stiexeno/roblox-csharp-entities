@@ -41,5 +41,12 @@ namespace Entities
 		// Hook the runtime fires after entity component mutations so cached
 		// groups can re-check membership.
 		public extern void NotifyComponentChanged(TEntity entity, int index, IComponent component);
+
+		// Hook the runtime fires for every component removed from an entity —
+		// including the bulk strip inside Entity.Destroy. Overridden by the
+		// codegen-emitted {Ctx}Context to run [Replicated] QueueRemove,
+		// [Unique] _Clear, and [EntityIndex] _Unregister so a plain Destroy
+		// stays in sync without a per-component Destroy override on the entity.
+		public virtual extern void _OnComponentRemoved(TEntity entity, int index, IComponent component);
 	}
 }
